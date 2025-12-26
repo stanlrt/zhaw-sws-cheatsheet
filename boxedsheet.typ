@@ -1,4 +1,4 @@
-#import "@preview/boxed-sheet:0.1.1": *
+#import "lib.typ": *
 
 #set text(font: "Roboto")
 #set text(lang: "en", //TODO LANG DE/EN
@@ -24,21 +24,6 @@
   column-gutter: 2pt,
   numbered-units: false,
 )
-
-#let subinline(title) = context {
-  let heading-count = counter(heading).at(here()).first()
-  let current-color = color-box.at(calc.rem(heading-count - 1, color-box.len()))
-
-  box(grid(
-    columns: (1fr, auto, 1fr),
-    align: horizon + center,
-    column-gutter: 1em,
-    line(length: 100%, stroke: (paint: current-color, thickness: 1pt, dash: "dashed")),
-    text(fill: current-color, weight: "regular")[#title],
-    line(length: 100%, stroke: (paint: current-color, thickness: 1pt, dash: "dashed")),
-    )
-  )
-}
 
 = Basics
 #concept-block(body: [
@@ -135,7 +120,7 @@
   - Use ```sql ;``` to execute separate queries, only if server uses `executeBatch()`
   - Insert user: ```sql userpass'), ('admin', 'Superuser', 'adminpass')--```
   - *Testing*:
-    - Set password to single-quote ' and see if DB returns error
+    - Set password to single-quote ' and see if DB returns error. Inject `SLEEP`
     - *Getting table names*: ```sql SELECT * FROM user_data WHERE last_name = Smith' UNION SELECT 1,TABLE_NAME,3,4,5,6,7 FROM INFORMATION_SCHEMA.SYSTEM_TABLES--``` 
       1. We assume `user_data` has 7 columns, all `int` except the 2nd one which is `string`
       2. We set the `UNION` query so that all columns but the 2nd are string literals (arbitrary numbers)
@@ -167,8 +152,6 @@
   - *Counter:* blacklist curly brackets, special chars
   \
   \
-  \
-  
   #subinline("XML External Entitiy Injection")
   Attacker makes a manual POST request with a special XML body:
   ```xml
@@ -202,8 +185,202 @@ The app will display the password file content instead as the comment text.
   *Counter:* long random 128bit UIDs, change ID for each login, use cookies not URL, use session timeouts (10min)
 
   #inline("XSS (cross-site scripting)")
+  Inject own JS code that is executed in other user's browser, without having to modify server code
+  #subinline("Stored (persist)")
+  Attacker places attack script directly as normal data in the web app (e.g. as a post comment). When user views it, browser executes the `script` tag.
+  #subinline("Reflected (non-persist)")
+  1. Make user click a link that makes server send back malicious script (e.g. as search query result: `http://www.xyz.com/search.asp?searchString=<script>ATTACK CODE</script>"`)
+  2. App displays "Search results for ...". The script tag is added to DOM and executed, not displayed.
+  - *Note*: both require poor serve code (no sanitation), storing+displaying of data  
+  - *Test*: `<script>alert("XSS worked");</script>`
+  #image("xssjack.png", width: 90%)
+  Can make form submission *automatic* by putting `send_postdata()` in a script tag \
+  *Counters to reflected:* 
+    - replace `<script>alert("XSS");</script>` with `&lt;script&gt;alert(&quot;XSS&quot;);&lt;/script&gt;`
+    - *XSS Auditor* detects that the JS code returned by server is the same as the one sent by the browser's previous REST request (*not in Firefox*). Can be bypassed with a local proxy.  (diff emitting address)
+    - CSP: specify which web content can be loaded from which locations (domains or hosts). ` Content-Security-Policy: default-src 'self'; img-src *; media-src media1.com media2.com; script-src scripts.supersecure.com`: same, imgs from anywhere, audio/video from media1 and media2, script from scripts.supersecure.com.
+  #subinline("DOM-based XSS")
+  Server not involved. 
+  - Variant 1 (`unescape`):
+    0. App displays `document.location.href` to the user, *using `unescape()`*
+    1. Attacker makes user click `ubuntu.test/attackdemo/general/DOMbased_XSS1.html#<script>alert("XSS");</script>`
+    2. App adds script to DOM, which is executed but not displayed
+    *Note*: cannot be caught by server bc the `#` is not included in the request. It doesn't work without `unescape` bc the characters will be URL-encoded.
+  - Variant 2 (`eval`):
+    0. ```js <script>
+  var data =  document.location.href.substring(document.location.href.lastIndexOf("data=") + 5);
+  var compute = "13 * " + data;
+  var result = eval(compute);
+  document.write(result);
+</script>```
+    1. Click `ubuntu.test/attackdemo/general/DOMbased_XSS3.html?data=19#data=19;alert('XSS');`
+    2. App reads last ocuurence of `data`: `data=19;alert('XSS');`
+    3. Eval computes `13*19; alert("XSS");`
+    *Note*: cannot be caught by server bc the `#` is not included in the request. `unescape` not used so `>`, `<` and `"` cannot be used (bc URL-encoded).
+  - *Counter*: avoid `unescape` and `eval`, avoid using JS to render elements controlled by user, 
+  #inline("Broken Access Control")
+  Access data or execute actions for which attacker isn't authorised
+  #subinline("Function level")
+  Access unauthorised function. E.g.: `/admin/post` EP does not check if user is actually admin
+  #subinline("Object level")
+  Attacker can use an authorised function in a manner that gives access to unauthorised objects (resources) \
+  E.g.: non-randomised resource IDs (username, filename, PID...) \
+  *Counter*: auth checks for every action and resource access, don't include resource IDs in URL or requests
+  #inline("Cross-Site Request Forgery (CSRF)")
+  Force another user to execute an unwanted action while they are authenticated
+  - *GET*:
+    0. Victim is logged into `shop.com`
+    1. Victim clicks on bad `attacker.com` link, which display an image: `<img src="https://shop.com/transfer?amount=1000&to=attacker" width="1" height="1">`
+    2. The image triggers a GET request to `shop.com`. Browser automatically attaches the `shop.com` cookie, so the request is valid.
+  - *POST*:
+    0. Victim is logged into `shop.com`
+    1. Victim clicks on bad `attacker.com` link, which contains a 0x0 Iframe, which contains an auto-submitting form
+  - *`fetch`*
+    ```js
+<script>
+    fetch("shop.com", {
+      method: "POST",
+      credentials: "include",
+      headers: {"Content-Type": "application/x-www-form-urlencoded"},
+      body: "title=ATTACK&message=SUCCESS&SUBMIT=submit"
+    });
+</script>
+    ```
+    *Note:* works bc GET and POST are not subject to the Same Origin Policy
+  - *Counter*: 
+      - Use user session token stored in session storage. Pass it in REST bodies. Compare sent, received and stored tokens.
+      - `Set-Cookie: SameSite`. `None` cookies are attached to all x-site requs, `Lax` cookies attached to GET x-site requs, `Strict` never attached. `lax` good but must ensure GET requs do not modify app state.
+  #inline("Testing tools")
+  - *ZAP*: Scans all requests then tries famous vulnes. But uses fixed vals that can block the app (e.g. incorrect form values)
+  - *Fortify*: static code analyser. Doesnt see SQL injection or XSS.   
+  - *Spotbug*: binary (JAR) analyser
+])
+
+= Buffer overflow & race cond (SDL 3 & 4)
+
+#concept-block(body: [
+#inline("Buffer overflows")
+Modify the program flow, crash the program, inject (malicious) own code, access sensitive information...
+
+#grid(
+  columns: (auto, auto),
+  image("buffo0.png"),
+  [
+    *`area` execution (leaf function)* \
+    `rbp == rsp` bc we use *Red Zone* opti. Local vars stored using neg. offsets of `rbp` (no `subq` instr.)
+  ],
+  image("buffo1.png"),
+  [
+    *`main` return (non-leaf)*
+    `rsp` points to top of stack to clearly delimitate `main`'s memory (no Red Zone opti)
+  ]
+)
+
+#subinline("Exploit example")
+```c
+void processData(int socket) {
+  char buffer[256], tempBuffer[12];
+  int count = 0, position = 0;
+  
+  /* Read data from socket and copy it into buffer */
+  count = recv(socket, tempBuffer, 12, 0);
+  while (count > 0) {
+    memcpy(buffer + position, tempBuffer, count)
+    position += count;
+    count = recv(socket, tempBuffer, 12, 0);
+  }
+
+  return 0;
+}
+```
+
+#grid(
+  columns: (28%, auto),
+  image("buffoexploit.png"),
+  [- Attacker sends more than `256 bytes` through socket. 
+  - Bytes `265` to `272` overwrite `ret address`. Attacker can replace it with the beginning addr. of buffer. 
+  - Bytes `0` to `264` contain attack code.
+  - Attack code runs with same privileges as program.]
+)
+
+- *Counters:* Check boundaries for any input/output op, avoid `gets`, `strcpy`, static code ana & fuzzing, forbid exec of code in mem data segments,  Address Space Layout Randomisation (ASLR), 
+
+#subinline("Stack canaries")
+- Random 8 bytes val gen at start if program
+- Pushed to stack right after `old rbp`
+- Before returning to calling function, stack value is compared to saved generated value
+- Program crashes/terminates if they don't match
+
+#inline("Race conditions")
+#subinline("TOCTOU (Time of Check Time of Write)")
+```c
+if(!access(file, W_OK)) {
+  printf("Enter data to write to file: ");
+  fgets(data, 100, stdin);
+  fd = fopen(file, "w+");
+  if (fd != NULL) {
+    fprintf(fd, "%s", data);
+  }
+} else {  /* user has no write access */
+  fprintf(stderr, "Permission denied when trying to open %s.\n", file);
+}
+```
+Attacker can change the file `file` points to after the `if` check passed but before writing starts, e.g. using a symlink to a sensitive file he shouldn't access \
+*Counters:* 
+  - use as little functions that take filename as arg as possible. Use it for initial file access and return a reusable file descriptor (e.g. used to check write perm).
+  - Let the OS handle perm checks and avoid running prog as root user.
+
+```java 
+public class SessionIDGenerator {
+  private static Random rng = new Random();
+  private static String newSessionID
+  
+  public static void createSessionID() {
+    byte[] randomBytes = new byte[16];
+    rng.nextBytes(randomBytes);
+    newSessionID = Util.toHexString(randomBytes);
+  }
+  
+  public static String getSessionID() {
+    return newSessionID;
+  }
+}
+```
+1. Thread A calls `create`
+2. Thread B calls `create`
+3. Thread A calls `get`. But it will get User B's session ID.
+])
+
+= Fundamental Security Principles (SDL 1, 2, 3)
+#concept-block(body: [
+   Battle-tested, true back then, now and in the future. Tech-independent. 
+
+   #inline("Secure the weakest link")
+   Attackers target the weakest component. Fix high risk vulnes first. To identify:  threat modelling, penetration tests, and risk analysis
+   #inline("Defense in depth")
+   1. Defend multiple layers, not just the outter one (e.g. don't assume servers can communicate unencrypted bc you have setup a firewall and inner network is safe)
+   2. Don't rely only on prevention. 
+      1. Prevent (_long, safe pw requs_)
+      2. Detect (_monitor large num of failed login_)
+      3. Contain (_lock hacked accounts_)
+      4. Recover (_ask users to reset pws, monitor attack IPs_)
+  #inline("Fail securely")
+  - *Version Downgrading Attack*: man in the middle convinces client and server that t.he other only supports old (vulnerable) protocol version. Server is configed to accept this.
+  - *Fail open vulne*: `isAdmin` initialised to `true`. Function that sets it to the actual value throws an error. Error is caught and `if` check is executed. `isAdmin` is still `true` so sensitive code runs.
+    ```java 
+boolean isAdmin = true;
+try {
+  isAdmin = checkPermissions();
+} catch (Exception ex) {
+  log.write(ex.toString());
+}
+if(isAdmin) {
+  // sensitive
+}
+```
+  #inline("Principle of Least Privilege")
   
 ])
 
-// TODEL
+// TODEL -- course outline
 #image("Screenshot 2025-12-06 185927.png")
