@@ -58,7 +58,7 @@
 
 = SDL (Secure Dev Life-cycle)
 #concept-block(body: [
-  #inline("Security activities")
+  #inline("Security activities", padding: false)
   #image("sdl.png", width: 80%)
   1. *Security requs*: based on functional requs. Must be clear and have no technical details. _(e.g. provide credit card → use crypto protected channel)_. Additional requs produced from thread model. activity. 
   2. *Thread modelling (50%)*: identify security design flaws based on the security requirements or 
@@ -108,7 +108,7 @@
     2. Too short session IDs in web app framework
 ])
 
-= Web app testing (SDL 5 & 6)
+= Web app attacks (SDL 5 & 6)
 #concept-block(body: [
   Many web apps, security low and critical data (banking, e-commerce...)
   OWASP: Top Ten, Testing Guide, App Secu Verif Standard, WebGoat (bad app example)
@@ -116,7 +116,7 @@
   #inline("Injection attacks")
   #subinline("SQL")
   - Tools: ```sql OR ``==`` ```, ```sql UNION interesting_cols FROM interesting_table```, ```sql ; UPDATE employee SET password = 'foo'-```
-  - If multiple params: use ```sql --``` to make rest of query a comment
+  - If multiple params: use ```sql -- ``` to make rest of query a comment. In MySQL the space at the end is required.
   - Use ```sql ;``` to execute separate queries, only if server uses `executeBatch()`
   - Insert user: ```sql userpass'), ('admin', 'Superuser', 'adminpass')--```
   - *Testing*:
@@ -138,7 +138,7 @@
       - `-D PUBLIC`: Specify the schema/database
     - *Dump table content*: ```sh sqlmap -r request.txt -D PUBLIC -T EMPLOYEE --dump```
       - `-T EMPLOYEE`: Specify the table
-  - *Countermeasures:* Prepared statements (```java $sth = prepare("SELECT id FROM users WHERE name=? AND pass=?"); execute($sth, $name, $pass);``` yields ```sql SELECT id FROM users WHERE name='\' OR \'\'=\'' AND pass='\' OR \'\'=\'';```)
+  - *Countermeasures:* Prepared statements, all inputs are pre-compiled and special chars are escaped (```java $sth = prepare("SELECT id FROM users WHERE name=? AND pass=?"); execute($sth, $name, $pass);``` yields ```sql SELECT id FROM users WHERE name='\' OR \'\'=\'' AND pass='\' OR \'\'=\'';```)
   #subinline("OS Cmd")
   - Java `Runtime.exec()` instead of `FileReader`/`FileInputStream`, PHP `system()`
   - *Test*: Analyse REST request, e.g. `HelpFile` field. Append `"` after filename and check for err. Append `; ipconfig`/` & ipconfig` (nix/msft). Might need to prepend `"` if app uses file path.
@@ -355,16 +355,16 @@ public class SessionIDGenerator {
 #concept-block(body: [
    Battle-tested, true back then, now and in the future. Tech-independent. 
 
-   #inline("Secure the weakest link")
+   #inline("1. Secure the weakest link")
    Attackers target the weakest component. Fix high risk vulnes first. To identify:  threat modelling, penetration tests, and risk analysis
-   #inline("Defense in depth")
+   #inline("2. Defense in depth")
    1. Defend multiple layers, not just the outter one (e.g. don't assume servers can communicate unencrypted bc you have setup a firewall and inner network is safe)
    2. Don't rely only on prevention. 
       1. Prevent (_long, safe pw requs_)
       2. Detect (_monitor large num of failed login_)
       3. Contain (_lock hacked accounts_)
       4. Recover (_ask users to reset pws, monitor attack IPs_)
-  #inline("Fail securely")
+  #inline("3. Fail securely")
   - *Version Downgrading Attack*: man in the middle convinces client and server that t.he other only supports old (vulnerable) protocol version. Server is configed to accept this.
   - *Fail open vulne*: `isAdmin` initialised to `true`. Function that sets it to the actual value throws an error. Error is caught and `if` check is executed. `isAdmin` is still `true` so sensitive code runs.
     ```java 
@@ -378,9 +378,123 @@ if(isAdmin) {
   // sensitive
 }
 ```
-  #inline("Principle of Least Privilege")
+  #inline("4. Principle of Least Privilege")
+  Keep separate apps for users with separate needs (admin dashboard)
+  #inline("5. Separation of Privileges")
+  - Preventing that a single user can carry out and conceal an action (or an attack) completely on his own \
+  - Separating the entity that approves an action, the entity that carries out an action, and the entity that monitors an action
+  - E.g. _Different people are responsible for development vs testing+approval of deployment_
+  #inline("6. Secure by Default")
+  Default config must be secure. \
+  Enforce 2FA, auto security updates, firewall on by default, minimal default permissions, no default pw (or force to change it) 
+  #inline("7. Minimise attack surface")
+  Include only necessary features, use packet-filtering firewalls to keep internal services hidden from Internet
+  #inline("8. Keep it simple")
+  Easier to maintain. Users shouldn't have to make important security decisions.
+  -  Re-use proven software components 
+  - Implement security-critical functions only once and place them in easily identifiable program components (e.g., in a separate security package)
+  - Do not allow the users to turn off important security features
+  #inline("Avoid Security by Obscurity")
+  Security by Obscurity = system is secure bc attackers don't know how its internals work. \
+  Good only as redundancy on top of other security measures. \
+  Reverse eng: disassembler, decompilers.
+  - *Source/Binary*: Transforms code into a functionally equivalent, unreadable version to protect IP during public delivery.
+  - *Data*: Obscures storage/structures (e.g., splitting variables, changing encoding, promoting scalars to objects).
+  - *Control Flow*: Reorders logic and injects false conditionals/junk code to break decompiler flow while preserving output.
+  - *Preventive*: Targets RE tools by stripping metadata and renaming identifiers to gibberish (e.g., `calculate()` -> `x()`).
+  #inline("Don't Trust User Input and Services")
+  Always validate the received data. Use defensive prog. \
+  Prefer *whitelisting* over *blacklisting* (i.e. define what is allowed, not what is forbidden). Don't try fixing invalid data, just reject it.
+])
+
+= Secure SSR webapps (SDL 3 & 4)
+
+#concept-block(body: [
+  Little client code, server returns full HTML pages.
+  #image("market.png")
+  #inline("DB permissions")
+  #image("dbperms.png")
+  #inline("Spring config")
+  `@EnableWebSecurity`: marks class as Spring Security config
+  ```java
+  @Bean
+  public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    http
+    .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+    .requiresChannel(channel -> channel.anyRequest().requiresSecure())
+    .csrf(csrf-> csrf.disable());
+    return http.build();
+  }
+  ```
+  - `authorizeHttpRequest`: all requests are permitted without authentication (per default, Spring Security requires authentication for all requests)
+  -  `requiresChannel`: all requests to HTTP are redirected to HTTPS
+  -  `csrf`: disable Cross-Site Request Forgery protection
+  #inline("Preventing Information leakage in Error Messages")
+  1. Add Spring templates for each type of errors (`500.html`, ...) to show a generic message
+  2. Remove the following from `application.properties`:
+     ```toml 
+     server.error.whitelabel.enabled=false
+     server.error.include-exception=true
+     server.error.include-message=always
+     server.error.include-stacktrace=always
+     ```
+  3. Catch errors and `return 0` inside `catch` blocks
+  #inline("Data Sanitation")
+  #image("brianisinthekitchen.png")
+  Risk of Reflected XSS vulne (`<script>alert("XSS")</script>`) \
+  2 fixes:
+  1. Input validation: Do not accept search strings that include JavaScript code
+  2. Data sanitation: Encode critical control characters before the search string is included in the webpage (e.g., replace `<` with `&lt;`) (`th:text` in Thymeleaf) \
+     *Required* because:
+     1. Users might want to search for JS code
+     2. Input validation might be turned off for new user needs in the future
+  *Important*: perform sanitation for all content that comes from external components (i.e. not the server code): client, database, file...
+  #inline("Secure Database Access (SQL inj)")
+  Use prepared statements
+  ```java
+  String sql = "SELECT * FROM Product WHERE Description LIKE ?";
+  return jdbcTemplate.query(sql, new ProductRowMapper(), "%" + description + "%");
+  ```
+
+  ```java
+  String sql = "INSERT INTO Purchase (Firstname, Lastname, CreditCardNumber, TotalPrice) "
+  + "VALUES (?, ?, ?, ?)";
+  return jdbcTemplate.update(sql, purchase.getFirstname(), purchase.getLastname(),
+  purchase.getCreditcardnumber(), purchase.getTotalprice());
+  ```
+  #subinline("Bad JPA examples")
+  Good: Always extend `CrudRepository`.   
+  Note: JPQL does not support UNION \
+  
+   Used JPA directly via class `EntityManager`and used JPQL query using string concatenation. ```sql no-match%' OR '%' = '```
+  ```java
+  public class ProductVulnerableRepository {
+    @Persis§§ tenceContext
+    private EntityManager entityManager;
+    public List<Product> findByDescriptionContaining(String description) {
+      Query query = entityManager.createQuery("SELECT p FROM Product p 
+      WHERE p.description LIKE '%" + description + "%'");
+      return query.getResultList(); 
+    }
+  ```
+  `EntityManager` is used, together with a native query and string concatenation
+  ```java
+  public List<Product> findByDescriptionContaining(String description) {
+    Query query = entityManager.createNativeQuery("SELECT * FROM Product
+    WHERE Description LIKE '%" + description + "%'");
+    List<Object[]> results = query.getResultList();
+    List<Product> products = new ArrayList<>();
+    Product product;
+    for (Object[] result : results) { // copy from results to products }
+    return products;
+  }
+  ```
+  #inline("Authentication and Access Control")
+  #subinline("Secure Storage of Passwords")
   
 ])
+
+= Secure CSR webapps (SDL 3 & 4)
 
 // TODEL -- course outline
 #image("Screenshot 2025-12-06 185927.png")

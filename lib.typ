@@ -22,7 +22,7 @@
     stroke: current-color,
     fill: fill-color,
     radius: 3pt,
-    inset: 6pt,
+    inset: (x: 6pt, top: 6pt, bottom: 4pt),
     width: width,
   )[
     #align(alignment)[
@@ -31,27 +31,31 @@
   ]
 }
 
-#let inline(title) = context {
-    let heading-count = counter(heading).at(here()).first()
-    let current-color = color-box.at(calc.rem(heading-count - 1, color-box.len()))
+#let inline(title, padding: true) = context {
+  let heading-count = counter(heading).at(here()).first()
+  let current-color = color-box.at(calc.rem(heading-count - 1, color-box.len()))
   
-    box(inset: (y: 0.4em), 
-      grid(
-        columns: (1fr, auto, 1fr),
-        align: horizon + center,
-        column-gutter: 1em,
-        line(length: 100%, stroke: 1pt + current-color),
-        text(fill: current-color, weight: "bold")[#title],
-        line(length: 100%, stroke: 1pt + current-color),
-      )
+  let top-inset = if padding { 0em } else { 0pt }
+  
+  box(inset: (top: top-inset, bottom: 0.4em), 
+    grid(
+      columns: (1fr, auto, 1fr),
+      align: horizon + center,
+      column-gutter: 1em,
+      line(length: 100%, stroke: 1pt + current-color),
+      text(fill: current-color, weight: "bold")[#title],
+      line(length: 100%, stroke: 1pt + current-color),
     )
+  )
 }
 
-#let subinline(title) = context {
+#let subinline(title, padding: true) = context {
   let heading-count = counter(heading).at(here()).first()
   let current-color = color-box.at(calc.rem(heading-count - 1, color-box.len()))
 
-  box(inset: (y: 0.4em), grid(
+  let top-inset = if padding { 0em } else { 0pt }
+
+  box(inset: (top: top-inset, bottom: 0.4em), grid(
     columns: (1fr, auto, 1fr),
     align: horizon + center,
     column-gutter: 1em,
