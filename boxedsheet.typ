@@ -4,6 +4,8 @@
 #set text(lang: "en", //TODO LANG DE/EN
     region: "gb")
 
+#show figure: set figure(supplement: [])
+
 
 #let author = "Stanislas Laurent"
 #let title = "SWS"
@@ -45,6 +47,7 @@
   - *Virus*: Spreads by inserting copies of itself into executable programs or documents (hosts), usually requires user interaction to spread
   - *Worm*: Malware, that spreads and executes on its own, without requiring a host program (as is the case with viruses). Scans for other sys, find vulne, infect new sys
   - *Trojan*: impostors – files or programs that claim to be something desirable but, in fact, are malicious. Do not replicate themselves. 
+  - *Drive-by download*: Browser/plugin vulnerability → auto-execute malicious code from compromised site
   - New targets: custom web apps, ransomware
   #inline("Defect types")
   - *Bug*: Problem introduced during *implementation* (e.g. error in a function that checks the passwords entered by users). _Can often be discovered by manual or automatic code inspection._
@@ -74,6 +77,8 @@
   #inline("Misc")
   - *Security risk analysis*: estimate risk of problems uncovered by 7 activities, and decide whether to act
   - SDL can be adopted incrementally. The earlier the better (lower fixing costs, avoid "quick symptom patches")
+  - Early activities *prevent* defects, late activities *detect* them
+  - Fix early = 10-100x cheaper than fixing late
 ])
 
 = Secu design/controls & code secu (SDL 3 & 4)
@@ -90,7 +95,7 @@
     2. Unchecked returned values _returns null, causes server or client crashes_
     3. Wrong assumptions: _server accessible only by hostname "alice.zhaw.ch". Dev uses getHostNames to convert IP to hostname and check if allowed. But DNS can be spoofed. Dev assumed DNS is safe._
   3. *Secu features*: reimplement your own, or misuse provided ones. _bad pseudo-random, incomplete access control, weak encryption (MD5, DES, RC4...)_
-  4. *Time & state*: issues due to parallelisation of tasks across multiple system. _eg: deadlocks, file access race condition (attacker changed file pointer after access was checked but before it is written to), reuse of session IDs_
+  4. *Time & state*: issues due to parallelisation of tasks across multiple system. _eg: deadlocks, TOCTOU file access race condition, reuse of session IDs, timing auth attacks_
   5. *Error handling*: mismanagement of the double control flow and data
     1. Internal data leakage: error message contains sensitive info (e.g. stack trace)
     2. Empty/broad catch block: program could crash bc error unhandled, or the borad catch could suppress errors in inherited classes _\//TODO handle error_
@@ -115,12 +120,11 @@
   #image("webappsbasic.png")
   #inline("Injection attacks")
   #subinline("SQL")
-  - Tools: ```sql OR ``==`` ```, ```sql UNION interesting_cols FROM interesting_table```, ```sql ; UPDATE employee SET password = 'foo'-```
-  - If multiple params: use ```sql -- ``` to make rest of query a comment. In MySQL the space at the end is required.
-  - Use ```sql ;``` to execute separate queries, only if server uses `executeBatch()`
-  - Insert user: ```sql userpass'), ('admin', 'Superuser', 'adminpass')--```
-  - *Testing*:
-    - Set password to single-quote ' and see if DB returns error. Inject `SLEEP`
+  1. Test for vulne:
+    - *Testing*: Insert `'` → SQL error (HTTP 500, different response) = vulnerable
+    - *Time-based*: ```sql SLEEP(5)``` causes delay if vulnerable
+    - *Boolean-based*: See if diff. response for `true`/`false` conditions (e.g., ```sql ' AND 1=1--``` vs ```sql ' AND 1=2--```)
+  2. Get db schemas
     - *Getting table names*: ```sql SELECT * FROM user_data WHERE last_name = Smith' UNION SELECT 1,TABLE_NAME,3,4,5,6,7 FROM INFORMATION_SCHEMA.SYSTEM_TABLES--``` 
       1. We assume `user_data` has 7 columns, all `int` except the 2nd one which is `string`
       2. We set the `UNION` query so that all columns but the 2nd are string literals (arbitrary numbers)
@@ -129,6 +133,15 @@
     - *Getting column names of a table*: ```sql SELECT * FROM user_data WHERE last_name = Smith' UNION SELECT 1,COLUMN_NAME,3,4,5,6,7 FROM INFORMATION_SCHEMA.SYSTEM_COLUMNS WHERE TABLE_NAME = 'EMPLOYEE'--```
       3. We set the 2nd column to `COLUMN_NAME` and query the `INFORMATION_SCHEMA.SYSTEM_COLUMNS` for table `EMPLOYEES`
       4. Second column contains one column name per row
+  - Exploit:
+    - *Tautology attack*: ```sql ' OR ''='``` (`OR` is evaluated after `AND`)
+    - *UNION attack*:
+      1. *Find column count*: Try ```sql ' UNION SELECT 1--```, ```sql ' UNION SELECT 1,2--```, etc. until no error. Use Burp Intruder (Sniper) to automate.
+      2. *Extract data*: ```sql ' UNION SELECT col1,CAST(col2 AS INT),... FROM table--``` (columns must match count AND types).
+    - Insertion attacks (here in password field): ```sql userpw'), ('admin', 'Superuser', 'adminpw')--```
+    - Update attack: ```sql ; UPDATE employee SET password = 'foo'-```
+    - If multiple params in query: ```sql -- ``` to make rest of query a comment. In MySQL the trailing space is required.
+    - Use ```sql ;``` to execute separate queries, only if server uses `executeBatch()`
   - *sqlmap (Automation)*:
     - *Check for vuln*: ```sh sqlmap -r request.txt -p account_name```
       - `-r request.txt`: HTTP request recorded in file
@@ -140,13 +153,26 @@
       - `-T EMPLOYEE`: Specify the table
   - *Countermeasures:* Prepared statements, all inputs are pre-compiled and special chars are escaped (```java $sth = prepare("SELECT id FROM users WHERE name=? AND pass=?"); execute($sth, $name, $pass);``` yields ```sql SELECT id FROM users WHERE name='\' OR \'\'=\'' AND pass='\' OR \'\'=\'';```)
   #subinline("OS Cmd")
-  - Java `Runtime.exec()` instead of `FileReader`/`FileInputStream`, PHP `system()`
+  - Exploit: `; cat /etc/shadow`
+  - Java `Runtime.exec()` instead of `FileReader`/`FileInputStream`/`ProcessBuilder`, PHP `system()`
   - *Test*: Analyse REST request, e.g. `HelpFile` field. Append `"` after filename and check for err. Append `; ipconfig`/` & ipconfig` (nix/msft). Might need to prepend `"` if app uses file path.
   - *Counter*: 
     - use IO classes instead of OS runtime
     - use character whitelisting (ban quotes...)
     - run process with minimal privieges
-  #subinline("JSON/XML")
+  - *Linux Permissions*: `-rwxr-xr-x 1 root root`
+    #table(
+      columns: (auto, auto, auto, auto),
+      inset: 6pt,
+      align: (center, center, left, center),
+      [*Part*], [*Octal*], [*Role*], [*Octal vals*],
+      [-], [-], [File Type], [Regular File],
+      [rwx], [*7*], [Owner (root)], [$4+2+1$],
+      [r-x], [*5*], [Group (root)], [$4+0+1$],
+      [r-x], [*5*], [Others], [$4+0+1$],
+    )
+    `755`: everyone can execute, but only `root` can modify.
+    #subinline("JSON/XML")
   - *JSON*: app inserts data inside of JSON -> you can overwrite previous keys, since the last occurrence matters. Insert: `myPassword","admin":"true`
   - Same principle for *XML*
   - *Counter:* blacklist curly brackets, special chars
@@ -164,14 +190,19 @@
 </comment>
   ```
 The app will display the password file content instead as the comment text.
-- *Counter:* blacklist < and >, disabled ext. entities in XML parser
+- *Counter:* blacklist < and >, disabled ext. entities in XML parser, use JSOn instead
 
 #inline("Auth & session")
-#subinline("Broken auth")
-- Attacker gets credentials (weak pw, reset pw)
-- Prerequ: unlimited login attempts allowed
-- *Brute-force*: try common usernames and pws, email enumeration (time or msg), create account and see if email taken. *Remove cookie headers for new session* \
-  *Counter:* vague msg ("Login failed"), CAPTCHA to rate limit accnt creation
+#subinline("Broken Authentication")
+- *Username enumeration*: Find valid usernames before brute-forcing
+  - Login behaves differently for existing/non-existing users (message, response time)
+  - Account creation: app complains if username already taken
+  - *Counter*: Vague error messages ("Login failed"), CAPTCHA on account creation
+- *Online brute-force*:
+  - *Prerequisite*: Unlimited login attempts without account lockout
+  - Burp Intruder: Capture login, mark username + password, remove Cookie header, *Cluster bomb* attack
+  - Find valid credentials: Look for *outliers* (different status code or response length)
+  - *Counter*: Rate limiting (e.g., 60s delay after 3 failures). Do NOT lock accounts → enables DoS (Denial of Service). Enforce password quality + check against common password lists
 - *Pw reset*: 
   1. Attck calls Amazon and usurps using security quest (name, email and billing address) to log-in
   2. Adds credit card
@@ -259,6 +290,30 @@ The app will display the password file content instead as the comment text.
 = Buffer overflow & race cond (SDL 3 & 4)
 
 #concept-block(body: [
+  #subinline("Memory Layout")
+  #grid(
+    columns: (2fr, 10fr),
+    gutter: 8pt,
+    align: horizon,
+    image("memory-layout.png"),
+    [
+      *Virtual address space*, low → high:
+      - *Code*: Instruction pointers should point here
+      - *Data*: Global and static variables
+      - *Heap*: Dynamic memory (`malloc`/`new`). Grows ↑
+      - *Stack*: Local vars, return addresses. Grows ↓
+    ],
+  )
+
+  #subinline("Stack Mechanics")
+  - *Stack frame*: Created per function call, destroyed on return
+  - *Stack Pointer (rsp)*: "Where am I now?" → moves on every push/pop
+  - *Base Pointer (rbp)*: "Where did my frame start?" → stays fixed, access local vars via offsets (`rbp-4`, `rbp-8`)
+  - *old rbp*: Saved so caller's frame can be restored after return
+  - *return address*: Where to jump back after function completes
+  - Frame layout (low → high): `[local vars] [old rbp] [ret addr]`
+
+  // #image("stack-frame.png")
 #inline("Buffer overflows")
 Modify the program flow, crash the program, inject (malicious) own code, access sensitive information...
 
@@ -403,14 +458,173 @@ if(isAdmin) {
   - *Control Flow*: Reorders logic and injects false conditionals/junk code to break decompiler flow while preserving output.
   - *Preventive*: Targets RE tools by stripping metadata and renaming identifiers to gibberish (e.g., `calculate()` -> `x()`).
   #inline("Don't Trust User Input and Services")
-  Always validate the received data. Use defensive prog. \
+  Always validate (+sanitate) the received data. Use defensive prog. \
   Prefer *whitelisting* over *blacklisting* (i.e. define what is allowed, not what is forbidden). Don't try fixing invalid data, just reject it.
+])
+
+= Java Security (SDL 4)
+
+#concept-block(body: [
+  #inline("General utils")
+  #subinline("JCA (Java Cryptography Architecture)")
+  Provider-based architecture: CSPs (Cryptographic Service Providers) implement algorithms. \
+  Default providers included, 3rd party (e.g., Bouncy Castle) addable. Specify: `getInstance("SHA-256", "BC")`
+
+  #subinline("Random Numbers")
+  #text(fill: red)[`java.util.Random` is *NOT* secure] → use `SecureRandom`
+  ```java
+  SecureRandom random = new SecureRandom(); // uses OS entropy
+  byte[] bytes = new byte[16];
+  random.nextBytes(bytes);
+  ```
+  `setSeed()` *supplements* randomness (never reduces it). Default seeding usually sufficient.
+
+  #subinline("Unkeyed hashing for integrity")
+  *Goal*: ensure the data wasn't accidentally corrupted. #text(fill: red)[Does not prevent tampering].
+  
+  ```java
+  MessageDigest md = MessageDigest.getInstance("SHA-256");
+  md.update(data1); // feed data (can call multiple times)
+  byte[] hash = md.digest(data2); // feed more data and compute hash
+  ```
+  *Secure:* SHA-256, SHA-512, SHA3-256, SHA3-512. #text(fill: red)[*Insecure:* MD5, SHA-1]
+
+  #inline("Symmetric crypto (Shared secret key)")
+  
+  #subinline("Secret Key Gen")
+  ```java
+  KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+  keyGen.init(256); // key size: 128, 192, or 256
+  SecretKey key = keyGen.generateKey();
+  // From existing raw bytes:
+  SecretKeySpec keySpec = new SecretKeySpec(rawBytes, "AES");
+  ```
+  #text(fill: red)[Password-based keys are *weak*] → use long random data or proper key derivation (PBKDF2).
+  
+  #subinline("Keyed HMAC (MAC hashing) to prevent tampering")
+  *Goal*: prevent attacker from modifying the cipher and computing the hash.
+
+  ```java
+  Mac hmac = Mac.getInstance("HmacSHA256");
+  SecretKeySpec secretKey = new SecretKeySpec(key, "HmacSHA256");
+  hmac.init(secretKey);
+  byte[] macResult = hmac.doFinal(data);
+  ```
+  
+  #subinline("Symmetric Encryption (Cipher)")
+  ```java Cipher.getInstance("algo/mode/padding") // AES/CBC/PKCS5Padding``` 
+  - Algo: `AES` or `ChaCha20` (#text(fill: red)[Not `DES` or `3DES`])
+  - Mode:
+    - #text(fill: red)[*ECB*: Never use!] Encrypts block by block, leaking patterns
+    - *CBC*: + MAC (Message Authentication Code) for integrity
+      ```java cipher.init(mode, key, new IvParameterSpec(iv));```
+    - *GCM*: Authenticated (confidentiality + integrity built-in)
+      ```java cipher.init(mode, key, new GCMParameterSpec(128, iv)); //128 tag bits```
+    - *CTR*: Stream mode
+
+    
+  For CBC/GCM/CTR, #text(fill: red)[never reuse the same *IV/Key* pair].
+  Also, #text(fill: red)[Always re-init the cipher after `doFinal`]:
+  ```java
+for (byte[] msg : messages) {
+  byte[] newIv = new byte[12]; // GCM standard IV length
+  secureRandom.nextBytes(newIv); // Fresh randomness!
+  
+  cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, newIv));
+  byte[] ciphertext = cipher.doFinal(msg);
+  
+  // Store newIv + ciphertext together so you can decrypt later
+}
+  ```
+
+  #inline("Public Key crypto (Asymmetric)")
+  #subinline("Key Pair Generation")
+  
+  ```java
+  KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+  keyGen.initialize(2048); // Min 2048 bits for RSA
+  KeyPair pair = keyGen.generateKeyPair();
+  PublicKey pubKey = pair.getPublic();
+  PrivateKey privKey = pair.getPrivate();
+  ```
+  
+  #subinline("Asymmetric Encryption (RSA)")
+  
+  - Goal: Confidentiality for small data (e.g. keys).
+  - `Cipher.getInstance("RSA/ECB/OAEPPadding")` (#text(fill: red)[Always use OAEP]). "ECB" is fine since RSA encrypts the entire message as one block.
+  - #text(fill: red)[Size limit]: RSA 2048 can only encrypt up to 245 bytes.
+  
+  ```java
+  cipher.init(Cipher.ENCRYPT_MODE, pubKey);
+  byte[] ciphertext = cipher.doFinal(plaintext);
+  ```
+  
+  #subinline("Hybrid Encryption (Key Wrapping)")
+  
+  - Goal: Encrypt large data by combining RSA (for key) with AES (for data).
+  
+  ```java
+  // Sender: Wrap (encrypt) a random AES key with recipient's RSA public key
+  cipher.init(Cipher.WRAP_MODE, recipientPubKey);
+  byte[] wrappedKey = cipher.wrap(aesSessionKey);
+  
+  // Recipient: Unwrap (decrypt) AES key with own private key
+  cipher.init(Cipher.UNWRAP_MODE, myPrivKey);
+  Key aesKey = cipher.unwrap(wrappedKey, "AES", Cipher.SECRET_KEY);
+  ```
+  
+  #subinline("Digital Signatures")
+  
+  - Goal: Authenticity and Integrity. Sign with `PrivateKey`, verify with `PublicKey`.
+  
+  ```java
+  Signature sig = Signature.getInstance("SHA256withRSA");
+  sig.initSign(privKey);
+  sig.update(data);
+  byte[] signature = sig.sign();
+  // Verification: sig.initVerify(pubKey) -> sig.update(data) -> sig.verify(signature)
+  ```
+
+  #inline("Storage and network")
+  #subinline("JSSE (Java Secure Sockets Extension)")
+  TLS sockets for secure communication. TLS 1.2/1.3 enabled by default (1.0/1.1 disabled, SSL not supported).
+  ```java
+  SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+  SSLSocket socket = (SSLSocket) sf.createSocket("host", 443);
+  // Server: SSLServerSocketFactory → SSLServerSocket → accept()
+  ```
+
+  #subinline("Keystore vs Truststore")
+  - *Keystore*: Own private key + certificate → used to authenticate *yourself* to others
+  - *Truststore*: Trusted CA certificates (no private keys) → used to verify *peer's* certificate
+  - *Server* needs keystore (prove identity to clients), *client* needs truststore (verify server)
+  - *Mutual TLS*: Both sides need keystore AND truststore (`setNeedClientAuth(true)`)
+  - Default truststore `$JAVA_HOME/lib/security/cacerts` contains official CA certs → public HTTPS works out of box
+  
+  #subinline("keytool (CLI for keystores)")
+  - *Generate keypair:* `keytool -genkeypair -keyalg rsa -keysize 2048 -keystore ks.p12 -storetype PKCS12 -alias mykey`
+  - *Export cert:* `keytool -exportcert -keystore ks.p12 -alias mykey -file cert.cer`
+  - *Import cert to truststore:* `keytool -importcert -keystore ts.p12 -file cert.cer -alias peer`
+  - *Run with stores:* `java -Djavax.net.ssl.keyStore=ks.p12 -Djavax.net.ssl.keyStorePassword=pw ...`
+
+  #subinline("SSLContext (Programmatic Config)")
+  Alternative to `-D` flags: configure TLS in code (for fine-grained control, mutual TLS, etc.). \
+  Build from: *KeyManagerFactory* (own keys) + *TrustManagerFactory* (trusted certs)
+  ```java
+  KeyManagerFactory kmf = KeyManagerFactory.getInstance("PKIX");
+  kmf.init(keyStore, password);  // load own private key
+  TrustManagerFactory tmf = TrustManagerFactory.getInstance("PKIX");
+  tmf.init(trustStore);          // load trusted certs
+  SSLContext ctx = SSLContext.getInstance("TLSv1.3");
+  ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
+  ```
 ])
 
 = Secure SSR webapps (SDL 3 & 4)
 
 #concept-block(body: [
-  Little client code, server returns full HTML pages.
+  Little client code, server returns full HTML pages. \
+  *Warning:* in Spring Security, rules cascade in reverse CSS order: higher rule has priority
   #image("market.png")
   #inline("DB permissions")
   #image("dbperms.png")
@@ -491,10 +705,447 @@ if(isAdmin) {
   ```
   #inline("Authentication and Access Control")
   #subinline("Secure Storage of Passwords")
-  
+  No plaintext or level-1 hashes. Use complex hashing (bcrypt, Argon2...) or 5000+ rounds of fast hashing (SHA-512, `Hash = SHA-512(SHA-512(...|salt|password))`).
+  *bcrypt*: `$<version>$<cost>$<salt><hash>` (cost = rounds, salt&hash char counts)
+  #subinline("Authentication Mechanism")
+  - *HTTP basic auth*: shows a login dialog when server returns a 401, send the username+pw as a (base64-encoded) HTTP Authorisation Header in *every* future REST call. *Can only be cleared by closing the browser.* There is no logout feature.
+    ```java http
+.authorizeHttpRequests(...)
+.httpBasic(withDefaults()) ```
+  - *Form auth*:
+    *Always use POST not GET* (GET includes the form data as URL params)
+    ```java
+    http
+    .authorizeHttpRequests( ... )
+    .formLogin(formLoginConfigurer-> formLoginConfigurer
+    .loginPage("/public/login")
+    .failureUrl("/public/login?error=true")
+    .permitAll())
+    ```
+    #subinline("CSRF protection (Cross-Site Request Forgery)")
+    Set `SameSite` to _Lax_ in `application.properties`
+
+    #subinline("Sessions")
+    `Set-Cookie: session-id=28A46...; expires=Fri, 23-Dec-2035 11:09:37 GMT; Domain=www.example.com; Path=/myexample; Secure; HttpOnly; SameSite=Lax`
+    - `session-id=...`: The name & value of the cookie session ID. Must be long and random.
+    - `expires`: if no expiry date is used, the cookie is deleted when closing the browser (*good for session cookies*)
+    - `Domain`, `Path`: Any request to resources below `www.example.com/myexample/` includes the cookie
+    - `Secure`: Only send the cookie over HTTPS
+    - `HttpOnly`: JavaScript cannot access the cookie via `document.cookie`
+    - `SameSite`: Specifies when cookies should be included in cross-site requests (_Lax_: only GET requests)
+
+    In `application.properties`:
+    ```toml
+    server.servlet.session.cookie.http-only=true
+    server.servlet.session.cookie.secure=true
+    server.servlet.session.timeout=10m
+    ```
+
+    #subinline("Input validation")
+    ```java 
+    @GetMapping("/public/products")
+    public String productsPage(@ModelAttribute @Valid ProductSearch productSearch, BindingResult bindingResult, Model model) {
+      if (bindingResult.hasErrors()) {
+        model.addAttribute("products", new ArrayList<Product>());
+        productSearch.setDescription("");
+        model.addAttribute("productSearch", productSearch);
+      } 
+
+
+    public class ProductSearch {
+      @Size(max = 50, message = "No more than 50")
+      private String description = "";
+    ```
+
+    `@Valid` tells Spring to enforce the `@Size` constraint. It stores the result in `BindingResult`. If there is an error, we show an empty product list.
 ])
 
 = Secure CSR webapps (SDL 3 & 4)
+
+#concept-block(body: [
+  #inline("JSON Web Tokens")
+  #subinline("Structure")
+  Header 
+  ```json
+  {
+    "alg":"HS256" // which MAC algo to use
+  }
+  ```
+  Payload 
+  ```json
+  {
+    "iss":"Marketplace", // issuer
+    "sub":"alice", // subject
+    "exp":"1749281266" // expiry date
+  }
+  ```
+  MAC (Message Authentication Code)
+  ```
+  HMAC-SHA256(header + "." + payload, key) // key known only by REST service server/backend
+  ```
+  Final full token
+  #text(fill: red, "Base64(header)")\.#text(fill: green, "Base64(payload)")\.#text(fill: blue, "Base64(MAC)")
+  #subinline("Props")
+  - cannot be forged due to secret HMAC key
+  - expires
+  - verifying the HMAC is fast
+  - stateless (self-contained)
+  - URL safe (no char encoding)
+  #subinline("How")
+  1. User authenticates using username+pw
+  2. Backend checks the pair in DB. If correct, it generates a JWT and sends it back
+  3. Client includes the JWT in every request
+  4. Backend extracts the username from the token
+  #inline("Erros")
+  - `CustomAccessDeniedHandler`: access control error (insufficient perm)
+  -  `InvalidParameterException`: Auth failed or invalid ID passed
+  - `MethodArgumentNotValidException`: `@Valid` is used and validation fails
+  - `ConstraintViolationException`: Bean Validation annotations are used with method parameters (e.g., @`Min` and `@Max`) and validation fails
+  - `MethodArgumentTypeMismatchException`: Thrown if a path parameter has the wrong type (e.g., a purchase ID of type int is expected, but a string is received)
+  - `RuntimeException`: Thrown if storing a purchase in the database does not work
+  #inline("Config")
+  ```java
+  // filter every request with the auth checker
+  http.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+  .exceptionHandling(exception -> exception
+  .accessDeniedHandler(accessDeniedHandler)
+  .authenticationEntryPoint(authenticationEntryPoint))
+  .cors(Customizer.withDefaults());
+  ```
+  #inline("CORS")
+  ```java
+  CorsConfiguration config = new CorsConfiguration();
+  config.setAllowedOrigins(Arrays.asList("*"));
+  config.setAllowedMethods(Arrays.asList("OPTIONS", "GET", "POST", "DELETE"));
+  config.setAllowedHeaders(Arrays.asList("*"));
+  UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+  source.registerCorsConfiguration("/rest/**", config);
+  return source
+  ```
+  - *Origin*: Protocol (`https://`), domain (`example.com`), port (`:8181`)
+  - Default `fetch` behaviour: only GET and POST cross-origin requests are allowed. Cannot contain auth. header (JWT), can't use ` application/json` content type, can't view the server's response
+  - Use CORS config to whitelist request origins and methods. *Preflight* requests use method `OPTIONS`, `Access-Control-Request-Method` and `Access-Control-Request-Headers: authorization`
+  - What if we need to allow requests form `*`?
+    - If no auth, no need because attacker can use same requests as all users
+    - If auth, we must 
+      - avoid cookies: since they can be included in the request `fetch("https://url", {credentials: "include",...});`
+      - use Bearer Tokens (e.g. JWT) *stored in session (or local) storage*. Attacker cannot access it because the origin of the malicious page is different from the real one storing the token. But this brings back risk of XSS attacks.
+    #inline("Storage")
+    - `local`: shared across tabs of same origin, persists browser closure
+    - `session`: scoped to the tab or browser window and cleared on browser closure
+])
+
+= Security Requirements Engineering and Threat Modeling
+
+#concept-block(body: [
+  #inline("Security Requirements Engineering")
+  - If not done: security flaws missed, can't do focused pen tests to verify requs are implemented
+  - Based secu requs on app's functional requs is not enough
+  - Describes the what must be protected, not the how (tech impl)
+
+  // #table(
+  //   columns: (0.8fr, 2fr, 1.5fr),
+  //   "Identify the business and security goals (interviews)", [], [
+  //     - The system allows its users efficient access to online functions of the university library
+  //     - The integrity of the system and its data shall be maintained
+  //     - The confidentiality of personal user data and credentials shall be guaranteed
+  //     - Any system activity is logged and can be linked to the user that carried out the activity
+  //   ],
+  //   "Collect info (interviews, artefacts)", [
+  //     - What features offered?
+  //     - Who are users?
+  //     - What data is processed?
+  //     - What are the most important assets?
+  //     - How does the system work (components, technologies, interactions,...)?
+  //     - What are the external dependencies?
+  //     - What is the minimum availability (24/7)?
+  //     - Existing secu requs
+  //   ], [
+  //     - 3 users: students, staff, librarians
+  //     - Students and staff can log in, search and reserve books, download e-books
+  //     - Librarians can manage reservations and users. They all share one account.
+  //     - *Availability* not important, down times ok
+  //     - *Ext. deps*: Linux, Java Spring Boot, MySQL, server firewall
+  //     - *Existing requs*: HTTPS TCP 443
+  //     - *Assets*: server-side systems, user data, user creds, logs
+  //   ],
+  //   "Decompose the system", [
+  //     - Network diagram
+  //     - Just enough detail to identify threats
+  //     - Include all assets
+  //   ], [
+  //     #image("uniapp.png")
+  //   ]
+  // )
+  #subinline("1. Identify the business and security goals (interviews)")
+
+  - The system allows its users efficient access to online functions of the university library
+  - The integrity of the system and its data shall be maintained
+  - The confidentiality of personal user data and credentials shall be guaranteed
+  - Any system activity is logged and can be linked to the user that carried out the activity
+  
+  #subinline("2. Collect info (interviews, artefacts)")
+  
+  *Questions:*
+  - What features offered?
+  - Who are users?
+  - What data is processed?
+  - What are the most important assets?
+  - How does the system work (components, technologies, interactions,...)?
+  - What are the external dependencies?
+  - What is the minimum availability (24/7)?
+  - Existing secu requs
+  
+  *Details:*
+  - 3 users: students, staff, librarians
+  - Students and staff can log in, search and reserve books, download e-books
+  - Librarians can manage reservations and users. They all share one account.
+  - *Availability* not important, down times ok
+  - *Ext. deps*: Linux, Java Spring Boot, MySQL, server firewall
+  - *Existing requs*: HTTPS TCP 443
+  - *Assets*: server-side systems, user data, user creds, logs
+  
+  #subinline("3. Decompose the system")
+  
+  - Network diagram
+  - Just enough detail to identify threats
+  - Include all assets
+  
+  #image("uniapp.png")
+
+  *Data flow:* 
+  #grid(
+    columns: (auto, auto, auto),
+    figure(image("proc.png"), caption: [A task that transforms an input into an output]),
+    figure(image("proc2.png"), caption: [Multiple procs]),
+    figure(image("users.png"), caption: [External entity]),
+    figure(image("datastore.png"), caption: [Data store (DB, config files, logs...)]),
+    figure(image("trust.png"), caption: [Trust Boundary:  separate components that should not automatically trust each other]),
+  )
+
+  #image("unidf.png")
+
+  Login:
+  #image("loginuni.png")
+
+  #subinline("4. Identify Threats, Risks, and Vulnerabilities")
+  - #strong[S]poofing: Attackers usurps identity
+  - #text(weight: "bold", "T")ampering: Modifying data or code without authorisation (rest or in transit) 
+  - #text(weight: "bold", "R")epudiation: No way to tie an action to a user, the attacker can deny having performed the attack
+  - #text(weight: "bold", "I")nformation Disclosure: Exposing data to unauthorised users (SQL inj)
+  - #text(weight: "bold", "D")enial of Service: Impacting the availability of a system or service
+  - #text(weight: "bold", "E")levation of Privilege: Gaining higher levels of access than intended (prog running in root)
+
+  #image("stride.png")
+
+  #inline("Threat Agents")
+  - *Script Kiddies*: Fun/fame, low skill. Free tools, low-hanging fruit
+  - *Insiders*: Revenge/profit, low-med skill. Abuse legitimate access, know protections
+  - *Hacktivists*: Embarrass orgs, low-med skill. DDoS, defacement
+  - *Cyber Criminals*: Profit, med-high skill. Phishing, ransomware, botnets
+  - *Nation States*: Intelligence, unlimited resources. Specific targets, will do anything
+  Key: Criminals pick easy targets, nation states persist until success
+  #image("elisa.png")
+
+  #colbreak()
+  
+  - Apply STRIDE to DF diag:
+
+  #grid(
+    row-gutter: 8pt,
+    columns: (auto, auto, auto),
+    figure(image("idk.png"), caption: [Librarian pw is shared and has no minimal requs -> *spoofing* threat]),
+    figure(image("repulib.png"), caption: [Since librs share one account, there is a *repudiation* risk]),
+    figure(image("studentss.png"), caption: [Students can snip the creds (*info disclosure*) or *tamper* but we use HTTPS #underline[so no vulne]]),
+    figure(image("spoofspoof.png"), caption: [*Spoofing* threat if attacker creates own copy of web app, but real app has certif from trusted authority #underline[so no vulne]]),
+    figure(image("spoofspoof.png"), caption: [*Tampering* if attacker modifies web app code or Tomcat config, but we use Java and hardened uni server, #underline[so no vulne]]),
+    figure(image("tamperr.png"), caption: [Webapp may contain vulne allowing write access to the files -> *tampering*]),
+  )
+
+    Data Store vs. Process Tampering: modify program code on server vs modify web app code while running, different ways to tamper so diff vulnes
+
+    #image("strideuni.png")
+])
+
+= Security Risk Analysis (Horizontal Activity)
+
+#concept-block(body: [
+  #image("riskan.png")
+  
+  #inline("Purpose")
+  - Rate *risk* (criticality) of vulnerabilities, threats, bugs → decide whether to address or not
+  - Complements: threat modeling, code review, pen testing, operations
+
+  #inline("The 4-Step Process")
+  1. *Identify vulnerabilities*: Via threat modeling, pen testing, code review
+    - Document: attack, threat agent, vulnerabilities, existing controls
+  2. *Estimate likelihood & impact*: For each vulnerability
+  3. *Determine risk*: Based on likelihood x impact
+  4. *Risk mitigation*: Decide actions, implement corrective measures
+
+  #inline("Quantitative vs Qualitative")
+  - *Quantitative*: $"ALE" = "SLE" times "ARO"$ (annual financial loss)
+    - $"SLE"$ = Single Loss Expectancy (cost per incident)
+    - $"ARO"$ = Annualised Rate of Occurrence (incidents/year)
+    - Example: DB breach every $5 "year"$, costs $100K$ → $"ALE" = 100K times 0.2 = 20K\/"year"$
+    - Hard to estimate for IT risks (unknown attacker behaviour)
+  - *Qualitative*: Likelihood & impact as levels (Low/Med/High) → preferred in practice
+
+  #inline("NIST 800-30 (simpler)")
+  *Simpler* -> more accurate, better for beginners or new threats \
+  *Controls*: safeguards or countermeasures
+  
+  Simple methodology, 3 levels each for likelihood & impact:
+  - *Likelihood*:
+    - High: Threat agent motivated & capable, controls ineffective
+    - Medium: Motivated & capable, but controls provide some protection
+    - Low: Lacks motivation/capability, or controls prevent
+  - *Impact*:
+    - High: Highly costly loss, significant harm to mission/reputation, death/serious injury
+    - Medium: Costly loss, harm to mission/reputation, injury
+    - Low: Some loss, noticeably affects mission/reputation
+
+
+#colbreak()
+
+  #inline("OWASP Risk Rating (detailed/structured)")
+  More structured: rate factors 0-9, average them. If factor irrelevant → skip (-)
+  
+#subinline("1. Likelihood Factors")
+#text(size: 4.6pt)[
+#table(
+  columns: (3fr, 5fr, 1fr),
+  align: (left, left, center),
+  [*Factor*], [*Criteria / Values*], [*Score*],
+  [Threat Actor Skill (skill of whoever happens to attack us, NOT skill needed to succesfully exploit)], [
+    - None (1)
+    - Some (3)
+    - Advanced (5)
+    - Network/Programming (6)
+    - Security Professional (9)
+  ], [],
+  [Threat Actor Motive], [
+    - Low Reward (1)
+    - Possible (4)
+    - High Reward (9)
+  ], [],
+  [Access Opportunity], [
+    - Full access needed (0)
+    - Special (4)
+    - Some (7)
+    - None needed (9)
+  ], [],
+  [Population Size], [
+    - Developers (2)
+    - System Admins (2)
+    - Intranet (4)
+    - Partners (5)
+    - Authenticated (6)
+    - Anonymous (9)
+  ], [],
+  [Ease of Discovery (see if target is affected by vulne)], [
+    - Impossible (1)
+    - Difficult (3)
+    - Easy (7)
+    - Automated (9)
+  ], [],
+  [Ease of Exploit], [
+    - Theoretical (1)
+    - Difficult (3)
+    - Easy (7)
+    - Automated (9)
+  ], [],
+  [Awareness Level (is vulne already known)], [
+    - No one knows about it (1)
+    - Hidden (4)
+    - Obvious (6)
+    - Public (9)
+  ], [],
+  [Intrusion Detection], [
+    - Active (1)
+    - Logged and Reviewed (3)
+    - Logged only (8)
+    - None (9)
+  ], [],
+  table.cell(colspan: 2, align: right)[*Sum (of above 8):*], [],
+  table.cell(colspan: 2, align: right)[*Likelihood Average (Sum / 8):*], []
+)
+]
+
+#subinline("2. Impact Factors")
+#text(size: 4.6pt)[
+#table(
+  columns: (3fr, 5fr, 1fr),
+  align: (left, left, center),
+  [*Factor*], [*Criteria / Values*], [*Score*],
+  [Financial Damage], [
+    - Less than cost to Fix (1)
+    - Minor (3)
+    - Significant (7)
+    - Bankruptcy (9)
+  ], [],
+  [Reputation Damage], [
+    - Minimal (1)
+    - Accounts Lost (4)
+    - Goodwill (5)
+    - Brand Damage (9)
+  ], [],
+  [Non-Compliance], [
+    - Minor (2)
+    - Clear Violation (5)
+    - High Profile (7)
+  ], [],
+  [Privacy Violation], [
+    - Single individual (3)
+    - Hundreds (5)
+    - Thousands (7)
+    - Millions (9)
+  ], [],
+  table.cell(colspan: 2, align: right)[*Sum (of above 4):*], [],
+  table.cell(colspan: 2, align: right)[*Impact Average (Sum / 4):*], []
+)
+]
+
+#colbreak()
+
+  #subinline("3. Risk Mapping")
+  #table(
+    columns: (1fr, 1fr, 1fr),
+    align: center,
+    [*0-3*], [*3-6*], [*6-9*],
+    [Low], [Medium], [High]
+  )
+
+  #inline("Risk Matrix (both methods)")
+  #table(
+    columns: (auto, auto, auto, auto),
+    stroke: 0.3pt,
+    inset: 2pt,
+    [], [*Impact Low*], [*Impact Med*], [*Impact High*],
+    [*Likelihood High*], table.cell(fill: rgb("ffe066"))[Medium], table.cell(fill: rgb("ffa94d"))[High], table.cell(fill: rgb("ff6b6b"))[Critical],
+    [*Likelihood Med*], table.cell(fill: rgb("8ce99a"))[Low], table.cell(fill: rgb("ffe066"))[Medium], table.cell(fill: rgb("ffa94d"))[High],
+    [*Likelihood Low*], table.cell(fill: rgb("dee2e6"))[Info], table.cell(fill: rgb("8ce99a"))[Low], table.cell(fill: rgb("ffe066"))[Medium],
+  )
+  - *Critical*: Stop operations, fix immediately
+  - *High*: Fix ASAP (days to weeks)
+  - *Medium*: Fix within reasonable time (next release)
+  - *Low/Info*: Accept or fix if easy
+
+  #inline("Risk Mitigation Options")
+  - *Accept*: Risk too small, corrective action not worth it
+  - *Reduce*: Implement measures to lower likelihood or impact
+  - *Avoid*: Remove the functionality entirely
+  - *Transfer*: Insurance, outsource
+  - *Ignore*: Know the risk but do nothing (bad practice)
+
+  #inline("Key Points")
+  - Combine methods: NIST 800-30 for most, OWASP for uncertain cases
+  - Risk analysis is subjective → do in team for better results
+  - Don't over-precise with OWASP (4 vs 5 doesn't matter much)
+  - Be pessimistic when unsure
+  - Cost-effective solutions: don't spend more than expected damage
+  - *Black Swans*: Low likelihood + High impact = Medium, but can be devastating → may have to accept and live with such risks
+])
 
 // TODEL -- course outline
 #image("Screenshot 2025-12-06 185927.png")
