@@ -30,7 +30,7 @@
 = Basics
 #concept-block(body: [
   #inline("CIA")
-  - *Confidentiality*: Sensitive data must be protected from unauthorised read access
+  - *Confidentiality*: Sensitive data must be protected from unauthorised read access 
   - *Integrity*: Data and systems must be protected from unauthorised modification
   - *Availability*: The information must be available when it is needed
   #inline("Defs")
@@ -50,8 +50,13 @@
   - *Drive-by download*: Browser/plugin vulnerability → auto-execute malicious code from compromised site
   - New targets: custom web apps, ransomware
   #inline("Defect types")
-  - *Bug*: Problem introduced during *implementation* (e.g. error in a function that checks the passwords entered by users). _Can often be discovered by manual or automatic code inspection._
-  - *Design flaw*: Problem introduced during the *design* (e.g. poorly designed password reset mechanism). Spotting them there is much more difficult, as a deeper understanding is required. _Can be uncovered by performing threat modelling_
+  - *Bug*: Localised problem introduced by *implementation*, simple fix. Discovered by _code review_.
+    - `gets()` -> `fgets()`, use prepared statements
+  - *Design flaw*: Architectural problem. Discovered by _threat modelling_.
+    - Plaintext pws without hashing or salting
+    - Client-only validation
+    - HTTP login (no HTTPS)
+  - ~50/50 split → design review matters as much as code review!
    #inline("Reactive countermeasures")
   - *Penetrate and Patch*: patch issues as they are discovered, widely used. _But: time until patch, time for users to install, might add new vulnes_
   - *Network Security Devices*: blocks attacks, e.g. WAF (web app firewall), IPS (intrusion prevent sys). Can't recognise all attacks.
@@ -134,14 +139,15 @@
       3. We set the 2nd column to `COLUMN_NAME` and query the `INFORMATION_SCHEMA.SYSTEM_COLUMNS` for table `EMPLOYEES`
       4. Second column contains one column name per row
   - Exploit:
-    - *Tautology attack*: ```sql ' OR ''='``` (`OR` is evaluated after `AND`)
+    - *Tautology attack*: ```sql ' OR ''='``` (`OR` is evaluated after `AND`) or ```sql ' OR 1=1```
     - *UNION attack*:
-      1. *Find column count*: Try ```sql ' UNION SELECT 1--```, ```sql ' UNION SELECT 1,2--```, etc. until no error. Use Burp Intruder (Sniper) to automate.
+      1. *Find column count*: Try ```sql ' UNION SELECT 1 -- ```, ```sql ' UNION SELECT 1,2 -- ```, etc. until no error. Or ```sql ' ORDER BY 4 -- ``` (if 4 fails, there are 3 columns)
       2. *Extract data*: ```sql ' UNION SELECT col1,CAST(col2 AS INT),... FROM table--``` (columns must match count AND types).
     - Insertion attacks (here in password field): ```sql userpw'), ('admin', 'Superuser', 'adminpw')--```
     - Update attack: ```sql ; UPDATE employee SET password = 'foo'-```
     - If multiple params in query: ```sql -- ``` to make rest of query a comment. In MySQL the trailing space is required.
     - Use ```sql ;``` to execute separate queries, only if server uses `executeBatch()`
+    - If app only reads first row: use `LIMIT offset,1` to select which row (e.g., ```sql ' OR 1=1 LIMIT 4,1#``` → (4+1)th row, read 1 row only)
   - *sqlmap (Automation)*:
     - *Check for vuln*: ```sh sqlmap -r request.txt -p account_name```
       - `-r request.txt`: HTTP request recorded in file
@@ -216,7 +222,7 @@ The app will display the password file content instead as the comment text.
   *Counter:* long random 128bit UIDs, change ID for each login, use cookies not URL, use session timeouts (10min)
 
   #inline("XSS (cross-site scripting)")
-  Inject own JS code that is executed in other user's browser, without having to modify server code
+  Inject own JS code that is executed in other user's browser, without having to modify server code  
   #subinline("Stored (persist)")
   Attacker places attack script directly as normal data in the web app (e.g. as a post comment). When user views it, browser executes the `script` tag.
   #subinline("Reflected (non-persist)")
@@ -248,6 +254,8 @@ The app will display the password file content instead as the comment text.
     2. App reads last ocuurence of `data`: `data=19;alert('XSS');`
     3. Eval computes `13*19; alert("XSS");`
     *Note*: cannot be caught by server bc the `#` is not included in the request. `unescape` not used so `>`, `<` and `"` cannot be used (bc URL-encoded).
+  - Var 4: SVG. Can contain `script` tags.
+  - Var 5: Event handlers and alternative vectors ( `<img src="x" onerror />, <input onfocus="" autofocus />`)
   - *Counter*: avoid `unescape` and `eval`, avoid using JS to render elements controlled by user, 
   #inline("Broken Access Control")
   Access data or execute actions for which attacker isn't authorised
@@ -285,6 +293,18 @@ The app will display the password file content instead as the comment text.
   - *ZAP*: Scans all requests then tries famous vulnes. But uses fixed vals that can block the app (e.g. incorrect form values)
   - *Fortify*: static code analyser. Doesnt see SQL injection or XSS.   
   - *Spotbug*: binary (JAR) analyser
+
+  #inline("SSRF (server side request forgery)")
+  Attacker makes it so the server requests data from itself instead of an external source, exposing its own data
+  
+  - *Attack*: Pass URL like `http://localhost:8080/admin` or `http://169.254.169.254/metadata` (cloud metadata)
+  - *Localhost filter bypasses* (when app blocks "localhost" or "127.0.0.1"):
+    - `0.0.0.0` = "all interfaces" on Linux, resolves to localhost
+    - `[::1]` = IPv6 localhost (often forgotten in filters)
+    - `2130706433` = decimal notation for 127.0.0.1
+    - `0x7f000001` = hex notation for 127.0.0.1
+    - `127.0.0.1.nip.io` = DNS rebinding, resolves to 127.0.0.1
+  - *Fix*: Whitelist allowed domains, block ALL private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x)
 ])
 
 = Buffer overflow & race cond (SDL 3 & 4)
@@ -510,6 +530,8 @@ if(isAdmin) {
   hmac.init(secretKey);
   byte[] macResult = hmac.doFinal(data);
   ```
+
+  #text(fill: red)[Always encrypt before calculating the MAC]
   
   #subinline("Symmetric Encryption (Cipher)")
   ```java Cipher.getInstance("algo/mode/padding") // AES/CBC/PKCS5Padding``` 
@@ -829,7 +851,22 @@ for (byte[] msg : messages) {
     - If no auth, no need because attacker can use same requests as all users
     - If auth, we must 
       - avoid cookies: since they can be included in the request `fetch("https://url", {credentials: "include",...});`
-      - use Bearer Tokens (e.g. JWT) *stored in session (or local) storage*. Attacker cannot access it because the origin of the malicious page is different from the real one storing the token. But this brings back risk of XSS attacks.
+      - use Bearer Tokens (e.g. JWT) *stored in session (or local) storage*. Attacker cannot access it because the origin of the malicious page is different from the real one storing the token. But this brings back risk of XSS attacks
+
+  #subinline("Preflight")
+  Browser sends `OPTIONS` first to ask if request is allowed:
+  ```http
+  OPTIONS /rest/admin/purchases/3
+  Access-Control-Request-Method: DELETE
+  Access-Control-Request-Headers: authorization
+  ```
+  Server responds with what's allowed:
+  ```http
+  Access-Control-Allow-Origin: https://localhost:8081
+  Access-Control-Allow-Methods: OPTIONS, GET, POST, DELETE
+  Access-Control-Allow-Headers: authorization
+  ```
+      
     #inline("Storage")
     - `local`: shared across tabs of same origin, persists browser closure
     - `session`: scoped to the tab or browser window and cleared on browser closure
@@ -1145,6 +1182,102 @@ for (byte[] msg : messages) {
   - Be pessimistic when unsure
   - Cost-effective solutions: don't spend more than expected damage
   - *Black Swans*: Low likelihood + High impact = Medium, but can be devastating → may have to accept and live with such risks
+])
+
+= Quick Reference
+
+#concept-block(body: [
+  #inline("Regular Expressions (Regex)")
+
+  #subinline("Security Rule: Always Anchor")
+  - `^pattern$` = matches *entire* string (secure) → use this for validation
+  - `pattern` = matches *substring* (insecure) → `evil../../etc/passwd` passes `[a-z]+`
+
+  #subinline("Syntax")
+  - *Quantifiers*: `?` zero/one | `+` one or more | `*` zero or more | `{n,m}` n to m times
+  - *Character classes*: `[abc]` match a, b, or c | `[^abc]` NOT a, b, c | `[a-z]` range
+  - *Shortcuts*: `.` any | `\s` whitespace, `\S` NOT | `\w` word, `\W` NOT | `\d` digit, `\D` NOT
+  - *Word boundary*: `\b` marks edge between word/non-word (`\bcat\b` matches "cat" not "category")
+  - *Anchors*: `^` start of string | `$` end of string
+  - *Grouping*: `(ab)+` matches "abab" (apply quantifier to group) | `cat|dog` matches "cat" or "dog"
+  - *Escape*: `\.` for literal dot (special chars: `. * + ? ^ $ { } [ ] ( ) | \`)
+
+  #subinline("Common Validation Patterns")
+  - *Alphanumeric*: `^[a-zA-Z0-9]+$`
+  - *Filename (safe)*: `^[a-zA-Z0-9_.-]{1,100}$` (no slashes)
+  - *Username*: `^[a-zA-Z][a-zA-Z0-9_]{2,31}$` (letter first, 3-32 chars)
+  - *Blacklist dangerous*: `^[^<>\"';&|$(){}\\[\\]]+$`
+
+  #inline("URL Encoding Reference")
+  *Path traversal*: `/` → `%2F` | `.` → `%2E` | `\` → `%5C` \
+  *XSS/HTML*: `<` → `%3C` | `>` → `%3E` | `"` → `%22` | `'` → `%27` \
+  *Other*: ` ` → `%20` | `%` → `%25` | `&` → `%26` | `#` → `%23` \
+  *Rule*: Decode BEFORE validation, never after!
+
+  #inline("Shell Metacharacters")
+  - *Separators*: `;` (chain) | `|` (pipe) | `&` (background) | `&&`/`||` (conditional)
+  - *Substitution*: ``` ` ` ``` or `$()` executes command, inserts output
+  - *Redirection*: `>` `<` `>>` (write/read/append files)
+  - *Quoting*: `"` `'` (escape context) | `\` (escape char)
+  - *Variables*: `$VAR` or `${VAR}` expands variable value
+
+  #inline("Linux File Permissions (ls -l)")
+  ```
+  -rwxr-xr-x  1  root  root  8312  Jan 8 2021  java
+  │└┬┘└┬┘└┬┘  │   │     │     │       │         └─ filename
+  │ │  │  │   │   │     │     │       └─ modified
+  │ │  │  │   │   │     │     └─ size (bytes)
+  │ │  │  │   │   │     └─ group owner
+  │ │  │  │   │   └─ user owner
+  │ │  │  │   └─ hard links
+  │ │  │  └─ other: r-x = 4+1 = 5
+  │ │  └─ group: r-x = 4+1 = 5
+  │ └─ owner: rwx = 4+2+1 = 7
+  └─ type: - file | d dir | l symlink
+  ```
+  - *Bits*: `r` read (4) | `w` write (2) | `x` execute (1) | `-` none (0) → sum per group
+
+  #inline("HTTP Status Codes")
+  - *2xx Success*: `200` OK | `201` Created | `204` No Content
+  - *3xx Redirect*: `301`/`302` Redirect (check for open redirect vulnerability)
+  - *4xx Client Error*: `400` Bad Request | `401` Unauthorized (no/invalid auth) | `403` Forbidden (valid auth, no permission) | `404` Not Found
+  - *5xx Server Error*: `500` Internal Error (check for info leak) | `502` Bad Gateway | `503` Service Unavailable
+
+  #inline("Common Ports")
+  - *Web*: 80 (HTTP) | 443 (HTTPS) | 8080/8443 (alt)
+  - *Auth/Mail*: 22 (SSH) | 21 (FTP) | 25 (SMTP) | 389 (LDAP)
+  - *Databases*: 3306 (MySQL) | 5432 (PostgreSQL) | 1433 (MSSQL) | 27017 (MongoDB) | 6379 (Redis)
+
+  #inline("Crypto Algorithms (JCA)")
+  *Symmetric*: AES (128/192/256-bit key, 16B IV) | CHACHA20 (256-bit key, 12B nonce) | SEED (128-bit, Bouncy Castle) \
+  *Modes*: CBC (+ separate MAC) | GCM (authenticated) | CTR (stream) | ECB (never use!) \
+  *Hashing*: SHA-256, SHA-512, SHA3-256, SHA3-512 (secure) | MD5, SHA-1 (insecure) \
+  *MAC*: `HmacSHA256`, `HmacSHA512`, `HmacSHA3-256`, `HmacSHA3-512` \
+  *Signatures*: `SHA256withRSA`, `SHA512withRSA`, `SHA3-256withRSA`
+
+  #inline("Recon & Exploitation Tools")
+  - *Directory discovery*: `gobuster dir -u https://target -w /usr/share/wordlists/dirb/common.txt`
+    - Add `-d` flag to detect backup files (`file~`, `.file.swp`)
+  - *SQLMap*: `sqlmap -r request.txt --force-ssl --dbs` (auto SQLi, `--technique=B` for blind only)
+  - *John the Ripper*: `john --format=raw-sha256 --wordlist=wordlist.txt hashes.txt` (format: `user:hash`)
+  - *JWT decode*: `echo 'eyJhbG...' | cut -d'.' -f2 | base64 -d` or use jwt.io
+  - *Burp Suite*: Intercept/modify requests, Intruder for fuzzing, Sequencer for session analysis
+  - *ZAP*: Alternative to Burp, Fuzzer not rate-limited
+  - *Request Catcher*: Receive exfiltrated data (requestcatcher.com) - use `/debug` endpoint to view requests
+  - *curl with auth*: `curl -u "user:pass" https://target` | with proxy: `curl -x http://127.0.0.1:8080`
+  - *Check IP via Tor*: `proxychains -q curl -s ifconfig.io`
+
+  #inline("Information Disclosure Patterns")
+  #subinline("Backup Files")
+  Editors leave recoverable backups. Try these patterns on discovered files:
+  - `file~` (vim backup) | `file.bak` | `.file.swp` (vim swap) | `#file#` (emacs)
+  - `file.old` | `file.orig` | `file.save` | `file.php~`
+
+  #subinline("Hash Identification")
+  - 32 hex = MD5: `5d41402abc4b2a76b9719d911017c592`
+  - 40 hex = SHA-1: `aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d`
+  - 64 hex = SHA-256: `2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c...`
+  - `$2a$`, `$2b$`, `$2y$` prefix = bcrypt | `$argon2` prefix = Argon2
 ])
 
 // TODEL -- course outline
